@@ -1,4 +1,5 @@
 export * from "./definition.ts";
+export * from "./engine/index.ts";
 export * from "./events.ts";
 export * from "./extract.ts";
 export * from "./machine.ts";

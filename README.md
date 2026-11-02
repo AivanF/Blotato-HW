@@ -13,7 +13,8 @@ The system is built around one idea: **all run logic is a pure function, and eve
 | `packages/core`: state machine, validator, trigger matching | Built and tested |
 | Ports in `packages/core` | Built |
 | `packages/testkit`: memory store, store contract suite, contacts | Built and tested |
-| Engine, simulator | Designed |
+| Engine and `RateLimiter` in `packages/core` | Built and tested |
+| Simulator in `packages/testkit` | Built |
 | Postgres store, HTTP transport, Docker Compose | Designed |
 | Mongo, gRPC, real Instagram and Facebook adapters | Designed for, not planned for this project |
 | Write-up of AI use | To be written by the author |
@@ -40,7 +41,7 @@ This has one especially useful consequence: the run is already waiting for a rep
 | Kleisli endomorphisms of `Writer<Effect[]>` on `S` | `step` | A pure core, tested without mocks |
 | Free monoid action of `Input*` | `replay`, a fold over inputs | A replayable audit log |
 | Defunctionalization | Nodes and extractors as JSON tags | Definitions that can be stored |
-| Natural transformation `Effect ~> Task` | Effect worker (designed) | Swappable platform adapters |
+| Natural transformation `Effect ~> Task` | `sendEffects` and `PlatformGateway` | Swappable platform adapters |
 | `Event → Option<Binding>` under the `First` monoid | `selectAutomation` | Deterministic priority |
 | Dataflow over a semilattice | `forwardFlow` in the validator | Proof that variables are bound and policies are met |
 | Algebraic theory and its models | `RunStore` and its adapters | One contract suite checks every database |
@@ -88,9 +89,10 @@ These are product questions rather than system design ones. This is a test proje
 
 | Question | Decision | Why | Status |
 |---|---|---|---|
-| Can someone trigger an automation again after their run ends? | Yes, with no cooldown | It's simple, and they asked again | Designed |
-| What if they trigger it again during an active run? | No new run; the event is logged as suppressed | Prevents duplicate DMs | Designed |
-| What if a second automation matches during an active run? | Same: suppressed and logged | A DM reply must have exactly one addressee, or an email could reach the wrong flow | Designed |
+| Can someone trigger an automation again after their run ends? | Yes, with no cooldown | It's simple, and they asked again | Built |
+| What if they trigger it again during an active run? | No new run; the event is logged as suppressed | Prevents duplicate DMs | Built |
+| What if a second automation matches during an active run? | Same: suppressed and logged | A DM reply must have exactly one addressee, or an email could reach the wrong flow | Built |
+| What if a rate-limit backlog delays the DM? | "Sent you a DM!" can go out well before the DM does. A customer can avoid this by putting the DM step first | Holding replies back would need effects to reserve limits together, which isn't worth the complexity yet | Built |
 | What if several automations match one comment? | Only the highest priority runs | Two automations messaging one person is spam | Built |
 | What counts as a keyword match? | Case-insensitive whole word: "Pricing?" matches, "repricing" doesn't | Fewest false triggers | Built |
 | Do the account's own comments trigger anything? | No | Our own reply could otherwise retrigger the automation forever | Built |
@@ -98,8 +100,8 @@ These are product questions rather than system design ones. This is a test proje
 | What if the reply isn't an email? | Re-prompt up to a per-automation limit, then abandon | Gives people a chance without nagging | Built |
 | What if they never reply? | The run expires silently after a per-automation timeout | Platform rules forbid reminders on Instagram | Built |
 | What if the comment reply fails? | Carry on | The DM is what matters | Built |
-| What if the final link DM fails? | The run stays Completed, and the failure is flagged for alerting | The email is already captured | Run state built; flagging designed |
-| What happens to in-flight runs when an automation is edited? | They finish on the version they started with | Changing a flow mid-conversation could strand a run | Designed |
+| What if the final link DM fails? | The run stays Completed, and the failure raises an `effectFailed` note for alerting | The email is already captured | Built |
+| What happens to in-flight runs when an automation is edited? | They finish on the version they started with | Changing a flow mid-conversation could strand a run | Built |
 | Is one person on two platforms one contact? | No, they're two contacts | Matching them would be guesswork with PII | Built |
 | What do we store about a contact? | Social platform, user ID, nickname if the platform gives one, and email | It's what a customer needs for a lead list | Built |
 | What if a contact gives a different email later? | The latest one replaces it | It's the address they most recently chose to give | Built |
@@ -114,7 +116,10 @@ These are product questions rather than system design ones. This is a test proje
 | An effect's result and its run update are one atomic write | With two writes, a crash between them leaves a run waiting on an effect it can never hear about |
 | A run's ID is derived from its trigger event | Retrying that event can't create a second run, so no separate uniqueness check is needed |
 | Contact changes are an output of `step`, saved in the run's write | A crash can't lose a captured email or record one twice, and the logic stays pure |
-| A `RateLimiter` port checked by the effect worker, with limits in `PlatformPolicy` (designed) | Keeps the store simple to implement, while limits stay per-platform data |
+| A `RateLimiter` port checked by the effect worker, with limits in `PlatformPolicy` | Keeps the store simple to implement, while limits stay per-platform data |
+| A sliding log for rate limits, not a token bucket | A token bucket can allow twice the limit within one window |
+| Waiting for a rate limit doesn't count as a failed send | Otherwise a backlog alone would make effects give up |
+| The engine is single steps with no loops inside | A server and a simulator can each schedule them their own way |
 | State column as source of truth, plus a transition log | Simpler reads than full event sourcing. A test asserts that folding the log gives the state |
 | Timeouts start at delivery, not when queued | A long rate-limit backlog would otherwise use up the wait |
 | Plain discriminated unions, no fp-ts or Effect | The math stays in the design, and the code stays easy to read |
@@ -133,7 +138,7 @@ Source: [Meta: Private Replies](https://developers.facebook.com/documentation/bu
 
 ## Reliability
 
-Each row is a guarantee of the store port, checked by the contract suite against the memory store so far. The Postgres column is designed, not built. The token bucket isn't part of the store contract, and arrives with the engine.
+Each row is a guarantee of the store port, checked by the contract suite against the memory store so far. The Postgres column is designed, not built. Rate limiting is a separate port with its own contract.
 
 | Hazard | Guarantee | Postgres |
 |---|---|---|
@@ -144,7 +149,7 @@ Each row is a guarantee of the store port, checked by the contract suite against
 | Messages out of order | One event at a time per contact, oldest first | `SKIP LOCKED` |
 | Double-triggered contact | One active run per account and contact | Partial unique index |
 | Crash between send and mark-sent | At-least-once delivery | Leases on claimed effects |
-| Viral post | One customer can't starve the others | Per-account token bucket and fair claiming |
+| Viral post | One customer can't starve the others | Per-account rate limits and fair claiming |
 
 Delivery is at-least-once, so a crash can occasionally produce a duplicate DM. A rare duplicate is a better failure than a lost lead.
 
@@ -177,7 +182,10 @@ This is designed, not built.
 | `render.ts` | Fills `{{variable}}` templates, in a single pass |
 | `platform.ts` | `PlatformId` and `PlatformPolicy` |
 | `events.ts` | `InboundEvent`, the canonical form of everything received |
-| `ports.ts` | `RunStore` and `PlatformGateway`, the interfaces adapters implement |
+| `ports.ts` | `RunStore`, `PlatformGateway`, `RateLimiter` and the other interfaces adapters implement |
+| `engine/dispatcher.ts` | `dispatchNext`: turns one inbound event into a new run or a reply |
+| `engine/effectWorker.ts` | `sendEffects`: deadlines, rate limits, sends, retries and backoff |
+| `engine/timerSweeper.ts` | `fireTimers`: delivers due timeouts to their runs |
 
 ### Usage
 
@@ -185,6 +193,7 @@ This is designed, not built.
 import { initialState, platformId, step, validate, wakeAt } from "@automations/core";
 
 const policy = {
+  rateLimits: [{ action: "privateReply", max: 750, perMs: 3_600_000 }],
   dmFromComment: { maxMessages: 1, withinMs: 7 * 24 * 3_600_000 },
   followUpWindowMs: 24 * 3_600_000,
 };
@@ -227,7 +236,7 @@ The policy check is deliberately strict: it can reject a legal flow, but it shou
 | Redelivery | Duplicate inputs change nothing once deduplicated by id |
 | Validator soundness | Any flow that passes obeys the platform policy under any inputs, and never shows an unfilled placeholder |
 
-These run on generated flows and input sequences using fast-check. They cover the pure core only. Crashes, real concurrency and database behaviour are for the simulator and Postgres contract tests, which aren't built yet.
+These run on generated flows and input sequences using fast-check, and cover the pure core only. The simulator below covers the engine and store together, and real database behaviour is for the Postgres contract run, which isn't built yet.
 
 ## The testkit package
 
@@ -237,6 +246,26 @@ These run on generated flows and input sequences using fast-check. They cover th
 |---|---|
 | `memoryStore.ts` | `createMemoryStore`, a `RunStore` for fast tests, with no database |
 | `storeContract.ts` | `describeRunStore`, the tests every store adapter must pass |
+| `rateLimiter.ts` | `createMemoryRateLimiter` and `describeRateLimiter`, the limiter's contract |
+| `harness.ts` | The whole engine wired to in-memory parts, with a fake clock and fake gateway |
+| `simulator.ts` | Runs the engine through adversarial schedules and checks the guarantees |
+
+### What the simulator proves
+
+A schedule is a generated list of: webhook deliveries in any order (with duplicates), engine steps (some run concurrently), clock jumps, crashes before or after any store write, and gateway failures. After each action, and after everything has drained, it checks:
+
+| Guarantee | Meaning |
+|---|---|
+| One active run | A contact never has two unfinished runs |
+| Rate limits | Sends never exceed a limit in any window |
+| Platform rules | One private reply per comment, within its window; other DMs only within a day of a reply |
+| Agreement with the fold | Each stored state and outbox equals `replay` of that run's log |
+| Nothing stuck | Every run finishes, and no event or effect is left behind |
+| No lost leads | A captured email gets its link, unless a fault was injected on that very send |
+| Order | A run's messages go out in order |
+| Exactly once when healthy | With no faults, each message goes out exactly once |
+
+Crashes can still produce a duplicate message, by design. The memory store is single-threaded, so concurrency here means interleaving at `await` points, not real parallelism.
 
 `RunStore` is split into three interfaces: `EventInbox`, `RunLog` and `EffectOutbox`. One adapter implements all three, because a single write can span them. It exposes no generic `transaction()`. Instead, each method is atomic and takes the pure transition as an argument, so an adapter can hold a lock or retry on a conflict.
 
@@ -262,7 +291,7 @@ pnpm typecheck
 
 1. `core`: machine, validator and property tests (done)
 2. `testkit`: memory store and store contract suite (done)
-3. `core`: engine (dispatcher, effect worker, timer sweeper), plus a simulator that injects duplicates, reordering and crashes
+3. `core`: engine (dispatcher, effect worker, timer sweeper) and rate limiter, plus a simulator that injects duplicates, reordering and crashes (done)
 4. `store-postgres`, passing the same contract suite
 5. HTTP transport, fake platform and Docker Compose, with an end-to-end script that also kills the server mid-flow
 6. Update this document to match what was actually built

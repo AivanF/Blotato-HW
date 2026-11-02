@@ -130,7 +130,10 @@ describe("platform policy", () => {
   });
 
   it("rejects any DM from a comment on a platform that has none", () => {
-    const none = { platform: platformId("none"), policy: { dmFromComment: null, followUpWindowMs: null } };
+    const none = {
+      platform: platformId("none"),
+      policy: { rateLimits: [], dmFromComment: null, followUpWindowMs: null },
+    };
     expect(codes(pricingFlow, [none])).toEqual(["dmNotAllowed"]);
   });
 

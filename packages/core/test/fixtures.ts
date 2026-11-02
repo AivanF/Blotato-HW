@@ -14,6 +14,7 @@ export const DAY = 24 * HOUR;
 
 /** Modelled on Instagram's rules: one private reply within 7 days, then a 24h window per reply. */
 export const strictPolicy: PlatformPolicy = {
+  rateLimits: [],
   dmFromComment: { maxMessages: 1, withinMs: 7 * DAY },
   followUpWindowMs: DAY,
 };
@@ -21,6 +22,7 @@ export const strictPolicy: PlatformPolicy = {
 export const strictTarget: PolicyTarget = { platform: platformId("strict"), policy: strictPolicy };
 
 export const permissivePolicy: PlatformPolicy = {
+  rateLimits: [],
   dmFromComment: { maxMessages: 1_000, withinMs: 365 * DAY },
   followUpWindowMs: null,
 };

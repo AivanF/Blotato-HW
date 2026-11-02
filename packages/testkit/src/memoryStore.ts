@@ -36,6 +36,7 @@ type EffectRow = {
   readonly effect: Effect;
   status: EffectStatus;
   attempts: number;
+  failures: number;
   lastError: string | null;
   nextAttemptAt: Instant;
   leaseUntil: Instant | null;
@@ -96,6 +97,7 @@ export const createMemoryStore = (): RunStore => {
         effect,
         status: "queued",
         attempts: 0,
+        failures: 0,
         lastError: null,
         nextAttemptAt: Number.NEGATIVE_INFINITY,
         leaseUntil: null,
@@ -219,7 +221,14 @@ export const createMemoryStore = (): RunStore => {
         for (const row of round.slice(0, limit - claimed.length)) {
           row.attempts += 1;
           row.leaseUntil = now + leaseMs;
-          claimed.push(copy({ run: row.run, effect: row.effect, attempt: row.attempts }));
+          claimed.push(
+            copy({
+              run: row.run,
+              effect: row.effect,
+              attempt: row.attempts,
+              failures: row.failures,
+            }),
+          );
         }
       }
       return claimed;
@@ -230,7 +239,16 @@ export const createMemoryStore = (): RunStore => {
       if (row !== undefined && row.status === "queued" && row.attempts === attempt) {
         row.nextAttemptAt = retryAt;
         row.leaseUntil = null;
+        row.failures += 1;
         row.lastError = error;
+      }
+    },
+
+    async deferEffect(ref, attempt, retryAt) {
+      const row = findEffect(ref.runId, ref.seq);
+      if (row !== undefined && row.status === "queued" && row.attempts === attempt) {
+        row.nextAttemptAt = retryAt;
+        row.leaseUntil = null;
       }
     },
 
@@ -257,10 +275,11 @@ export const createMemoryStore = (): RunStore => {
       return copy(
         effects
           .filter((row) => row.run.runId === runId)
-          .map(({ effect, status, attempts, lastError }) => ({
+          .map(({ effect, status, attempts, failures, lastError }) => ({
             effect,
             status,
             attempts,
+            failures,
             lastError,
           })),
       );

@@ -317,6 +317,28 @@ export const describeRunStore = (name: string, createStore: () => Promise<RunSto
         expect((await store.effects("r1"))[0]?.lastError).toBe("rate limited");
       });
 
+      it("counts a retry as a failure, and a deferral as none", async () => {
+        await startWithEffects();
+        const ref = { runId: "r1", seq: 0 };
+        await store.claimEffects(0, 10, LEASE);
+        await store.deferEffect(ref, 1, 10);
+        expect(await claimedIds(9)).toEqual([]);
+        const [second] = await store.claimEffects(10, 10, LEASE);
+        expect(second?.failures).toBe(0);
+        await store.retryEffect(ref, 2, 20, "down");
+        const [third] = await store.claimEffects(20, 10, LEASE);
+        expect(third?.failures).toBe(1);
+        expect((await store.effects("r1"))[0]).toMatchObject({ attempts: 3, failures: 1 });
+      });
+
+      it("ignores a deferral from an older claim", async () => {
+        await startWithEffects();
+        await store.claimEffects(0, 10, LEASE);
+        await store.claimEffects(LEASE, 10, LEASE);
+        await store.deferEffect({ runId: "r1", seq: 0 }, 1, 0);
+        expect(await claimedIds(LEASE + 1)).toEqual([]);
+      });
+
       it("ignores a retry from an older claim, so two workers can't send at once", async () => {
         await startWithEffects();
         await store.claimEffects(0, 10, LEASE);

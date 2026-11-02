@@ -9,7 +9,7 @@ import {
 } from "./definition.ts";
 import type { Comment, Instant } from "./events.ts";
 import { contactPatchFor, extract, type ContactPatch } from "./extract.ts";
-import type { PlatformPolicy } from "./platform.ts";
+import type { ActionClass, PlatformPolicy } from "./platform.ts";
 import { render, type Bindings } from "./render.ts";
 
 export type MachineConfig = {
@@ -38,6 +38,11 @@ export type Recipient =
 export type Action =
   | { readonly kind: "replyToComment"; readonly commentId: string; readonly text: string }
   | { readonly kind: "sendDm"; readonly recipient: Recipient; readonly text: string };
+
+export const actionClass = (action: Action): ActionClass => {
+  if (action.kind === "replyToComment") return "commentReply";
+  return action.recipient.kind === "viaComment" ? "privateReply" : "directMessage";
+};
 
 export type Effect = {
   /** Unique within a run, and the order effects must be performed in. */

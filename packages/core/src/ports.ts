@@ -1,6 +1,7 @@
+import type { Trigger, ValidDefinition } from "./definition.ts";
 import type { EventRef, InboundEvent, Instant } from "./events.ts";
 import type { Action, Effect, Input, RunState, Transition } from "./machine.ts";
-import type { PlatformId } from "./platform.ts";
+import type { PlatformId, PlatformPolicy, RateLimit } from "./platform.ts";
 
 export type AccountRef = {
   readonly platform: PlatformId;
@@ -77,14 +78,17 @@ export type EffectStatus = "queued" | "delivered" | "failed" | "cancelled";
 export type ClaimedEffect = {
   readonly run: RunRef;
   readonly effect: Effect;
-  /** Identifies this claim. A retry from an older claim is ignored. */
+  /** Identifies this claim. A release from an older claim is ignored. */
   readonly attempt: number;
+  /** Failed sends so far. Differs from `attempt` because rate-limit waits aren't failures. */
+  readonly failures: number;
 };
 
 export type EffectRecord = {
   readonly effect: Effect;
   readonly status: EffectStatus;
   readonly attempts: number;
+  readonly failures: number;
   readonly lastError: string | null;
 };
 
@@ -100,8 +104,10 @@ export interface EffectOutbox {
    * one busy account can't starve the rest.
    */
   claimEffects(now: Instant, limit: number, leaseMs: number): Promise<readonly ClaimedEffect[]>;
-  /** Releases the effect until `retryAt`. Ignored unless `attempt` is the latest claim. */
+  /** Counts a failed send and releases the effect until `retryAt`, if `attempt` is the latest claim. */
   retryEffect(ref: EffectRef, attempt: number, retryAt: Instant, error: string): Promise<void>;
+  /** Releases the effect until `retryAt` without counting a failure, if `attempt` is the latest claim. */
+  deferEffect(ref: EffectRef, attempt: number, retryAt: Instant): Promise<void>;
   /**
    * Records the result and applies `input` to the run in one write. If they were separate, a
    * crash between them would leave the run waiting on an effect it can never hear about.
@@ -142,3 +148,53 @@ export type Outcome =
 export interface PlatformGateway {
   perform(account: AccountRef, action: Action, idempotencyKey: string): Promise<Outcome>;
 }
+
+export type Platform = {
+  readonly policy: PlatformPolicy;
+  readonly gateway: PlatformGateway;
+};
+
+export type Platforms = ReadonlyMap<PlatformId, Platform>;
+
+export type RateDecision =
+  | { readonly tag: "granted" }
+  | { readonly tag: "denied"; readonly retryAt: Instant };
+
+/** Shared between workers, so limits hold however many are running. */
+export interface RateLimiter {
+  /** Grants at most `limit.max` per account in any window of `limit.perMs`. */
+  acquire(account: AccountRef, limit: RateLimit, now: Instant): Promise<RateDecision>;
+}
+
+export interface Clock {
+  now(): Instant;
+}
+
+export type CatalogEntry = {
+  readonly versionId: string;
+  readonly trigger: Trigger;
+};
+
+export type AccountAutomations = {
+  /** The account's own user ID, so its comments can be ignored. */
+  readonly selfAuthorId: string;
+  /** Active automations targeting this account, highest priority first. */
+  readonly automations: readonly CatalogEntry[];
+};
+
+export interface AutomationCatalog {
+  forAccount(account: AccountRef): Promise<AccountAutomations>;
+  definition(versionId: string): Promise<ValidDefinition | null>;
+}
+
+export type EngineNote =
+  | { readonly tag: "runSuppressed"; readonly event: InboundEvent; readonly versionId: string }
+  | {
+      readonly tag: "effectFailed";
+      readonly run: RunRef;
+      readonly seq: number;
+      readonly error: string;
+    };
+
+/** For logs and alerts. Best-effort, because durable truth lives in the store. */
+export type NoteSink = (note: EngineNote) => void;
