@@ -12,7 +12,7 @@ The system is built around one idea: **all run logic is a pure function, and eve
 |---|---|
 | `packages/core`: state machine, validator, trigger matching | Built and tested |
 | Ports in `packages/core` | Built |
-| `packages/testkit`: memory store, store contract suite | Built and tested |
+| `packages/testkit`: memory store, store contract suite, contacts | Built and tested |
 | Engine, simulator | Designed |
 | Postgres store, HTTP transport, Docker Compose | Designed |
 | Mongo, gRPC, real Instagram and Facebook adapters | Designed for, not planned for this project |
@@ -100,7 +100,9 @@ These are product questions rather than system design ones. This is a test proje
 | What if the comment reply fails? | Carry on | The DM is what matters | Built |
 | What if the final link DM fails? | The run stays Completed, and the failure is flagged for alerting | The email is already captured | Run state built; flagging designed |
 | What happens to in-flight runs when an automation is edited? | They finish on the version they started with | Changing a flow mid-conversation could strand a run | Designed |
-| Is one person on two platforms one contact? | No, they're two contacts | Matching them would be guesswork with PII | Designed |
+| Is one person on two platforms one contact? | No, they're two contacts | Matching them would be guesswork with PII | Built |
+| What do we store about a contact? | Social platform, user ID, nickname if the platform gives one, and email | It's what a customer needs for a lead list | Built |
+| What if a contact gives a different email later? | The latest one replaces it | It's the address they most recently chose to give | Built |
 
 ### Engineering decisions
 
@@ -111,6 +113,8 @@ These are product questions rather than system design ones. This is a test proje
 | A failed run cancels its queued effects | A contact should never get messages from a dead flow. Enforced by the store contract; a completed run's final DM is unaffected |
 | An effect's result and its run update are one atomic write | With two writes, a crash between them leaves a run waiting on an effect it can never hear about |
 | A run's ID is derived from its trigger event | Retrying that event can't create a second run, so no separate uniqueness check is needed |
+| Contact changes are an output of `step`, saved in the run's write | A crash can't lose a captured email or record one twice, and the logic stays pure |
+| A `RateLimiter` port checked by the effect worker, with limits in `PlatformPolicy` (designed) | Keeps the store simple to implement, while limits stay per-platform data |
 | State column as source of truth, plus a transition log | Simpler reads than full event sourcing. A test asserts that folding the log gives the state |
 | Timeouts start at delivery, not when queued | A long rate-limit backlog would otherwise use up the wait |
 | Plain discriminated unions, no fp-ts or Effect | The math stays in the design, and the code stays easy to read |
@@ -153,7 +157,7 @@ This is designed, not built.
 | `automations` | Status, priority, active version | |
 | `automation_accounts` | Which accounts an automation targets | Unique `(automation_id, social_account_id)` |
 | `automation_versions` | Immutable `definition` JSON | Unique `(automation_id, version)` |
-| `contacts` | Person per account, plus email (PII) | Unique `(social_account_id, platform_user_id)` |
+| `contacts` | Platform, account, user ID, nickname and email (PII) | Unique `(platform, account_id, contact_id)` |
 | `inbound_events` | Inbox | Unique `(platform, account_id, event_id)` |
 | `runs` | `state` JSON, `status`, `wake_at`, pinned version | Primary key derived from the trigger event; partial unique `(social_account_id, contact_id) WHERE status = 'active'` |
 | `run_transitions` | Audit log: input, effects, state after | Unique `(run_id, input_id)` |

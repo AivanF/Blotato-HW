@@ -7,6 +7,8 @@ export type Comment = {
   readonly commentId: string;
   readonly postId: string;
   readonly authorId: string;
+  /** The author's nickname, if the platform provides one. */
+  readonly authorName?: string;
   readonly text: string;
   readonly occurredAt: Instant;
 };

@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { initialState, replay, step, wakeAt, type Input, type RunState } from "../src/index.ts";
-import { DAY, HOUR, pricingComment, pricingConfig, T0 } from "./fixtures.ts";
+import {
+  initialState,
+  replay,
+  step,
+  wakeAt,
+  type Input,
+  type MachineConfig,
+  type RunState,
+} from "../src/index.ts";
+import {
+  DAY,
+  HOUR,
+  mustValidate,
+  pricingComment,
+  pricingConfig,
+  strictPolicy,
+  T0,
+} from "./fixtures.ts";
 
 const started: Input = { tag: "Started", id: "s", at: T0, comment: pricingComment };
 const settled = (seq: number, at: number, ok = true): Input => ({
@@ -77,6 +93,150 @@ describe("the pricing flow", () => {
     ]);
     expect(second.state).toMatchObject({ tag: "done", outcome: "abandoned" });
     expect(second.effects).toHaveLength(first.effects.length);
+  });
+});
+
+describe("flows with two awaits", () => {
+  const twoAwaits: MachineConfig = {
+    definition: mustValidate({
+      trigger: { kind: "comment", keyword: "go", posts: "any" },
+      entry: "askEmail",
+      nodes: {
+        askEmail: { kind: "sendDm", text: "Email?", onFailure: "abort", next: "waitEmail" },
+        waitEmail: {
+          kind: "awaitReply",
+          extract: { kind: "email" },
+          bindAs: "email",
+          onMatch: "askBackup",
+          reprompt: "Email, please?",
+          maxReprompts: 1,
+          onExhausted: "end",
+          timeoutMs: 100,
+          onTimeout: "end",
+        },
+        askBackup: { kind: "sendDm", text: "Backup?", onFailure: "abort", next: "waitBackup" },
+        waitBackup: {
+          kind: "awaitReply",
+          extract: { kind: "email" },
+          bindAs: "backup",
+          onMatch: "end",
+          reprompt: "Backup, please?",
+          maxReprompts: 1,
+          onExhausted: "end",
+          timeoutMs: 500,
+          onTimeout: "end",
+        },
+        end: { kind: "end", outcome: "completed" },
+      },
+    }),
+    policy: strictPolicy,
+  };
+
+  const reachedSecond = [
+    started,
+    settled(0, T0),
+    replied("r1", T0 + 1, "no"),
+    replied("r2", T0 + 2, "ada@example.com"),
+  ];
+
+  it("moves on to the second await, with a fresh state for it", () => {
+    expect(replay(twoAwaits, reachedSecond).state).toMatchObject({
+      tag: "waiting",
+      node: "waitBackup",
+      reprompts: 0,
+      timerArmedBy: 2,
+      deadline: null,
+    });
+  });
+
+  it("uses the second await's own timeout", () => {
+    const delivered = [...reachedSecond, settled(2, T0 + 10)];
+    expect(wakeAt(replay(twoAwaits, delivered).state)).toBe(T0 + 10 + 500);
+  });
+
+  it("doesn't let the first await's timer fire on the second", () => {
+    const stale: Input = { tag: "TimerFired", id: "t", at: T0 + 101 };
+    expect(replay(twoAwaits, [...reachedSecond, stale]).state).toMatchObject({
+      tag: "waiting",
+      node: "waitBackup",
+    });
+  });
+
+  it("sends no second DM from a repeated timer on a path that DMs after a timeout", () => {
+    // Found by the soundness law: this flow DMs for the first time after a timeout.
+    const config: MachineConfig = {
+      definition: mustValidate({
+        trigger: { kind: "comment", keyword: "go", posts: "any" },
+        entry: "first",
+        nodes: {
+          first: {
+            kind: "awaitReply",
+            extract: { kind: "email" },
+            bindAs: "email",
+            onMatch: "end",
+            reprompt: "x",
+            maxReprompts: 0,
+            onExhausted: "end",
+            timeoutMs: 1,
+            onTimeout: "dm",
+          },
+          dm: { kind: "sendDm", text: "hi", onFailure: "continue", next: "second" },
+          second: {
+            kind: "awaitReply",
+            extract: { kind: "email" },
+            bindAs: "email",
+            onMatch: "end",
+            reprompt: "x",
+            maxReprompts: 0,
+            onExhausted: "end",
+            timeoutMs: 1,
+            onTimeout: "end",
+          },
+          end: { kind: "end", outcome: "abandoned" },
+        },
+      }),
+      policy: strictPolicy,
+    };
+    const { effects } = replay(config, [
+      started,
+      { tag: "TimerFired", id: "t1", at: T0 + 1 },
+      { tag: "TimerFired", id: "t2", at: T0 + 1 },
+    ]);
+    expect(effects).toHaveLength(1);
+  });
+});
+
+describe("contact capture", () => {
+  it("records the nickname when a run starts", () => {
+    const comment = { ...pricingComment, authorName: "ada" };
+    const transition = step(pricingConfig, initialState, { ...started, comment } as Input);
+    expect(transition.contact).toEqual({ nickname: "ada" });
+  });
+
+  it("still creates the contact when the platform gives no nickname", () => {
+    expect(step(pricingConfig, initialState, started).contact).toEqual({});
+  });
+
+  it("captures the email when the reply contains one", () => {
+    const before = stateAfter(started);
+    const { contact } = step(pricingConfig, before, replied("r1", T0 + 1, "ada@example.com"));
+    expect(contact).toEqual({ email: "ada@example.com" });
+  });
+
+  it("changes nothing on the contact for an invalid reply or a timer", () => {
+    const before = stateAfter(started);
+    expect(step(pricingConfig, before, replied("r1", T0 + 1, "no")).contact).toBeUndefined();
+    const fired: Input = { tag: "TimerFired", id: "t", at: T0 };
+    expect(step(pricingConfig, before, fired).contact).toBeUndefined();
+  });
+
+  it("accumulates patches across a replay", () => {
+    const comment = { ...pricingComment, authorName: "ada" };
+    const { contact } = replay(pricingConfig, [
+      { ...started, comment } as Input,
+      replied("r1", T0 + 1, "ada@example.com"),
+    ]);
+    expect(contact).toEqual({ nickname: "ada", email: "ada@example.com" });
   });
 });
 

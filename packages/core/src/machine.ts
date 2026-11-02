@@ -8,7 +8,7 @@ import {
   type ValidDefinition,
 } from "./definition.ts";
 import type { Comment, Instant } from "./events.ts";
-import { extract } from "./extract.ts";
+import { contactPatchFor, extract, type ContactPatch } from "./extract.ts";
 import type { PlatformPolicy } from "./platform.ts";
 import { render, type Bindings } from "./render.ts";
 
@@ -71,7 +71,12 @@ export type RunState =
   | WaitingState
   | { readonly tag: "done"; readonly outcome: RunOutcome; readonly bindings: Bindings };
 
-export type Transition = { readonly state: RunState; readonly effects: readonly Effect[] };
+export type Transition = {
+  readonly state: RunState;
+  readonly effects: readonly Effect[];
+  /** Saved in the same write as the state, so a crash can't lose a captured email. */
+  readonly contact?: ContactPatch;
+};
 
 export const initialState: RunState = { tag: "idle" };
 
@@ -158,13 +163,14 @@ const walk = (config: MachineConfig, from: NodeId, start: Cursor, at: Instant): 
       case "awaitReply": {
         const last = effects.at(-1);
         return {
+          // The cursor goes first: starting from a waiting state, it still holds that await's fields.
           state: {
+            ...cursor,
             tag: "waiting",
             node: id,
             reprompts: 0,
             timerArmedBy: last?.seq ?? null,
             deadline: last === undefined ? at + node.timeoutMs : null,
-            ...cursor,
           },
           effects,
         };
@@ -197,7 +203,10 @@ const onReply = (
 
   if (value !== null) {
     const bindings = { ...state.bindings, [node.bindAs]: value };
-    return walk(config, node.onMatch, { ...replied, bindings }, input.at);
+    return {
+      ...walk(config, node.onMatch, { ...replied, bindings }, input.at),
+      contact: contactPatchFor(node.extract, value),
+    };
   }
   if (state.reprompts >= node.maxReprompts) {
     return walk(config, node.onExhausted, replied, input.at);
@@ -253,18 +262,22 @@ export const step = (config: MachineConfig, state: RunState, input: Input): Tran
       return unchanged;
     case "idle":
       return input.tag === "Started"
-        ? walk(
-            config,
-            config.definition.entry,
-            {
-              comment: input.comment,
-              bindings: {},
-              lastReplyAt: null,
-              nextSeq: 0,
-              pending: [],
-            },
-            input.at,
-          )
+        ? {
+            ...walk(
+              config,
+              config.definition.entry,
+              {
+                comment: input.comment,
+                bindings: {},
+                lastReplyAt: null,
+                nextSeq: 0,
+                pending: [],
+              },
+              input.at,
+            ),
+            contact:
+              input.comment.authorName === undefined ? {} : { nickname: input.comment.authorName },
+          }
         : unchanged;
     case "waiting":
       switch (input.tag) {
@@ -291,13 +304,17 @@ export const replay = (
   const seen = new Set<string>();
   const effects: Effect[] = [];
   let state = from;
+  let contact: ContactPatch | undefined;
   for (const input of inputs) {
     if (!seen.has(input.id)) {
       seen.add(input.id);
       const next = step(config, state, input);
       state = next.state;
       effects.push(...next.effects);
+      if (next.contact !== undefined) {
+        contact = { ...contact, ...next.contact };
+      }
     }
   }
-  return { state, effects };
+  return contact === undefined ? { state, effects } : { state, effects, contact };
 };

@@ -152,6 +152,7 @@ describe("laws of step", () => {
         const tail = replay(config, inputs.slice(at), snapshot);
         expect(tail.state).toEqual(whole.state);
         expect([...head.effects, ...tail.effects]).toEqual(whole.effects);
+        expect({ ...head.contact, ...tail.contact }).toEqual(whole.contact ?? {});
       }),
     );
   });

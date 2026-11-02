@@ -4,6 +4,7 @@ import {
   wakeAt,
   type AccountRef,
   type ClaimedEffect,
+  type Contact,
   type Effect,
   type EffectStatus,
   type EventRef,
@@ -52,6 +53,9 @@ const contactKey = (event: InboundEvent): string =>
 const accountKey = (account: AccountRef): string =>
   JSON.stringify([account.platform, account.accountId]);
 
+const personKey = (account: AccountRef, contactId: string): string =>
+  JSON.stringify([account.platform, account.accountId, contactId]);
+
 const isActive = (row: RunRow): boolean => row.state.tag !== "done";
 
 const isFree = (leaseUntil: Instant | null, now: Instant): boolean =>
@@ -66,6 +70,7 @@ export const createMemoryStore = (): RunStore => {
   const events = new Map<string, EventRow>();
   const runs = new Map<string, RunRow>();
   const effects: EffectRow[] = [];
+  const contacts = new Map<string, Contact>();
 
   const findEffect = (runId: string, seq: number): EffectRow | undefined =>
     effects.find((row) => row.run.runId === runId && row.effect.seq === seq);
@@ -78,7 +83,13 @@ export const createMemoryStore = (): RunStore => {
     const transition = copy(f(copy(row.state), copy(input)));
     row.state = transition.state;
     row.applied.add(input.id);
-    row.log.push({ input: copy(input), effects: transition.effects, state: transition.state });
+    row.log.push({ ...transition, input: copy(input) });
+    if (transition.contact !== undefined) {
+      const { account, contactId } = row.ref;
+      const key = personKey(account, contactId);
+      const current = contacts.get(key) ?? { account, contactId, nickname: null, email: null };
+      contacts.set(key, { ...current, ...transition.contact });
+    }
     for (const effect of transition.effects) {
       effects.push({
         run: row.ref,
@@ -235,6 +246,11 @@ export const createMemoryStore = (): RunStore => {
         row.leaseUntil = null;
         row.lastError = result.tag === "failed" ? result.error : row.lastError;
       }
+    },
+
+    async getContact(account, contactId) {
+      const contact = contacts.get(personKey(account, contactId));
+      return contact === undefined ? null : copy(contact);
     },
 
     async effects(runId) {

@@ -1,6 +1,7 @@
 import {
   platformId,
   type AccountRef,
+  type ContactPatch,
   type Effect,
   type InboundEvent,
   type Input,
@@ -189,6 +190,7 @@ export const describeRunStore = (name: string, createStore: () => Promise<RunSto
         };
         await expect(store.startRun(runRef("r1"), start(), boom)).rejects.toThrow("boom");
         expect(await store.getRun("r1")).toBeNull();
+        expect(await store.getContact(account, "contact-1")).toBeNull();
         expect(await store.startRun(runRef("r2"), start(), to(waiting()))).toBe("started");
       });
     });
@@ -420,6 +422,113 @@ export const describeRunStore = (name: string, createStore: () => Promise<RunSto
         await startWithEffects("quiet", "a", otherAccount);
         expect(await claimedIds(0, 2)).toEqual(["busy-1:0", "quiet:0"]);
         expect(await claimedIds(0, 2)).toEqual(["busy-2:0", "busy-3:0"]);
+      });
+    });
+
+    describe("contacts", () => {
+      const withContact =
+        (contact: ContactPatch, state: RunState = waiting()): TransitionFn =>
+        () => ({ state, effects: [], contact });
+
+      it("creates a contact with its platform, user ID and nickname", async () => {
+        await store.startRun(runRef("r1"), start(), withContact({ nickname: "ada" }));
+        expect(await store.getContact(account, "contact-1")).toEqual({
+          account,
+          contactId: "contact-1",
+          nickname: "ada",
+          email: null,
+        });
+      });
+
+      it("creates a contact from an empty patch, when no nickname is known", async () => {
+        await store.startRun(runRef("r1"), start(), withContact({}));
+        expect(await store.getContact(account, "contact-1")).toMatchObject({
+          nickname: null,
+          email: null,
+        });
+      });
+
+      it("creates nothing when a transition has no patch", async () => {
+        await store.startRun(runRef("r1"), start(), to(waiting()));
+        expect(await store.getContact(account, "contact-1")).toBeNull();
+      });
+
+      it("merges a patch, leaving missing fields alone", async () => {
+        await store.startRun(runRef("r1"), start(), withContact({ nickname: "ada" }));
+        await store.applyInput("r1", input("i1"), withContact({ email: "ada@example.com" }));
+        await store.applyInput("r1", input("i2"), withContact({}));
+        expect(await store.getContact(account, "contact-1")).toMatchObject({
+          nickname: "ada",
+          email: "ada@example.com",
+        });
+      });
+
+      it("keeps a contact across runs, with the latest email winning", async () => {
+        await store.startRun(
+          runRef("r1"),
+          start(),
+          withContact({ nickname: "ada", email: "old@example.com" }, completed),
+        );
+        await store.startRun(runRef("r2"), start(), withContact({ email: "new@example.com" }));
+        expect(await store.getContact(account, "contact-1")).toMatchObject({
+          nickname: "ada",
+          email: "new@example.com",
+        });
+      });
+
+      it("keeps one contact per account and user ID", async () => {
+        await store.startRun(runRef("r1"), start(), withContact({ nickname: "ada" }));
+        await store.startRun(runRef("r2", "bob"), start(), withContact({ nickname: "bob" }));
+        await store.startRun(
+          runRef("r3", "contact-1", otherAccount),
+          start(),
+          withContact({ nickname: "other" }),
+        );
+        expect((await store.getContact(account, "contact-1"))?.nickname).toBe("ada");
+        expect((await store.getContact(account, "bob"))?.nickname).toBe("bob");
+        expect((await store.getContact(otherAccount, "contact-1"))?.nickname).toBe("other");
+      });
+
+      it("doesn't apply a patch again for a repeated input", async () => {
+        await store.startRun(runRef("r1"), start(), withContact({}));
+        await store.applyInput("r1", input("i1"), withContact({ email: "first@example.com" }));
+        await store.applyInput("r1", input("i1"), withContact({ email: "second@example.com" }));
+        expect((await store.getContact(account, "contact-1"))?.email).toBe("first@example.com");
+      });
+
+      it("saves the patch in the run's log", async () => {
+        await store.startRun(runRef("r1"), start(), withContact({ nickname: "ada" }));
+        expect((await store.transitions("r1"))[0]?.contact).toEqual({ nickname: "ada" });
+      });
+
+      it("applies a patch delivered with an effect's result", async () => {
+        await store.startRun(runRef("r1"), start(), to(waiting(), [effect(0)]));
+        await store.finishEffect(
+          { runId: "r1", seq: 0 },
+          { tag: "delivered" },
+          settled(0),
+          withContact({ email: "ada@example.com" }),
+        );
+        expect((await store.getContact(account, "contact-1"))?.email).toBe("ada@example.com");
+      });
+
+      it("doesn't let a caller change a stored contact through a returned value", async () => {
+        await store.startRun(runRef("r1"), start(), withContact({ nickname: "ada" }));
+        const contact = await store.getContact(account, "contact-1");
+        (contact as { nickname: string }).nickname = "changed";
+        expect((await store.getContact(account, "contact-1"))?.nickname).toBe("ada");
+      });
+
+      it("loses no field when different inputs patch one contact at once", async () => {
+        await store.startRun(runRef("r1"), start(), withContact({}));
+        await Promise.all([
+          store.applyInput("r1", input("i1"), withContact({ nickname: "ada" })),
+          store.applyInput("r1", input("i2"), withContact({ email: "ada@example.com" })),
+        ]);
+        expect(await store.getContact(account, "contact-1")).toMatchObject({
+          nickname: "ada",
+          email: "ada@example.com",
+        });
       });
     });
 

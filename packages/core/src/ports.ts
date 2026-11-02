@@ -37,11 +37,7 @@ export type RunRecord = {
   readonly state: RunState;
 };
 
-export type TransitionRecord = {
-  readonly input: Input;
-  readonly effects: readonly Effect[];
-  readonly state: RunState;
-};
+export type TransitionRecord = Transition & { readonly input: Input };
 
 export type DueRun = {
   readonly run: RunRef;
@@ -117,8 +113,25 @@ export interface EffectOutbox {
   effects(runId: string): Promise<readonly EffectRecord[]>;
 }
 
-/** Atomicity spans all three, so one adapter implements them together. */
-export type RunStore = EventInbox & RunLog & EffectOutbox;
+export type Contact = {
+  /** Holds the social platform and the customer's account on it. */
+  readonly account: AccountRef;
+  /** The contact's user ID on that platform. */
+  readonly contactId: string;
+  readonly nickname: string | null;
+  readonly email: string | null;
+};
+
+/**
+ * Contacts are written only as part of a run's transition: each `contact` patch is merged
+ * into the stored contact, creating it if needed, in the same write as the run's state.
+ */
+export interface ContactBook {
+  getContact(account: AccountRef, contactId: string): Promise<Contact | null>;
+}
+
+/** Atomicity spans all of these, so one adapter implements them together. */
+export type RunStore = EventInbox & RunLog & EffectOutbox & ContactBook;
 
 export type Outcome =
   | { readonly tag: "ok" }
