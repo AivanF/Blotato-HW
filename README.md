@@ -11,7 +11,9 @@ The system is built around one idea: **all run logic is a pure function, and eve
 | Part | Status |
 |---|---|
 | `packages/core`: state machine, validator, trigger matching | Built and tested |
-| Engine, ports, mock store, simulator | Designed |
+| Ports in `packages/core` | Built |
+| `packages/testkit`: memory store, store contract suite | Built and tested |
+| Engine, simulator | Designed |
 | Postgres store, HTTP transport, Docker Compose | Designed |
 | Mongo, gRPC, real Instagram and Facebook adapters | Designed for, not planned for this project |
 | Write-up of AI use | To be written by the author |
@@ -41,7 +43,7 @@ This has one especially useful consequence: the run is already waiting for a rep
 | Natural transformation `Effect ~> Task` | Effect worker (designed) | Swappable platform adapters |
 | `Event → Option<Binding>` under the `First` monoid | `selectAutomation` | Deterministic priority |
 | Dataflow over a semilattice | `forwardFlow` in the validator | Proof that variables are bound and policies are met |
-| Algebraic theory and its models | Store port and adapters (designed) | One contract suite checks every database |
+| Algebraic theory and its models | `RunStore` and its adapters | One contract suite checks every database |
 
 The math stops at the network. Exactly-once sending is impossible, so section "Reliability" makes a deliberate choice instead.
 
@@ -106,7 +108,9 @@ These are product questions rather than system design ones. This is a test proje
 |---|---|
 | A graph of four node types, not a fixed pipeline or general DSL | Handling an invalid reply already needs a branch, and nothing needs more yet |
 | Postgres with our own state machine, not Temporal | Customer-authored flows would still need this interpreter inside a workflow, plus a cluster to run. `step` could move to Temporal unchanged |
-| A failed run cancels its queued effects | A contact should never get messages from a dead flow. Enforced by the store contract (designed); a completed run's final DM is unaffected |
+| A failed run cancels its queued effects | A contact should never get messages from a dead flow. Enforced by the store contract; a completed run's final DM is unaffected |
+| An effect's result and its run update are one atomic write | With two writes, a crash between them leaves a run waiting on an effect it can never hear about |
+| A run's ID is derived from its trigger event | Retrying that event can't create a second run, so no separate uniqueness check is needed |
 | State column as source of truth, plus a transition log | Simpler reads than full event sourcing. A test asserts that folding the log gives the state |
 | Timeouts start at delivery, not when queued | A long rate-limit backlog would otherwise use up the wait |
 | Plain discriminated unions, no fp-ts or Effect | The math stays in the design, and the code stays easy to read |
@@ -125,7 +129,7 @@ Source: [Meta: Private Replies](https://developers.facebook.com/documentation/bu
 
 ## Reliability
 
-This section is designed, not built. Each row is a guarantee of the store port, and the Postgres column is how that adapter will provide it.
+Each row is a guarantee of the store port, checked by the contract suite against the memory store so far. The Postgres column is designed, not built. The token bucket isn't part of the store contract, and arrives with the engine.
 
 | Hazard | Guarantee | Postgres |
 |---|---|---|
@@ -151,7 +155,7 @@ This is designed, not built.
 | `automation_versions` | Immutable `definition` JSON | Unique `(automation_id, version)` |
 | `contacts` | Person per account, plus email (PII) | Unique `(social_account_id, platform_user_id)` |
 | `inbound_events` | Inbox | Unique `(platform, account_id, event_id)` |
-| `runs` | `state` JSON, `status`, `wake_at`, pinned version | Unique `(trigger_event_id)`; partial unique `(social_account_id, contact_id) WHERE status = 'active'` |
+| `runs` | `state` JSON, `status`, `wake_at`, pinned version | Primary key derived from the trigger event; partial unique `(social_account_id, contact_id) WHERE status = 'active'` |
 | `run_transitions` | Audit log: input, effects, state after | Unique `(run_id, input_id)` |
 | `effects` | Outbox: `status`, `attempts`, `not_after`, `lease_until` | Unique `(run_id, seq)` |
 
@@ -169,6 +173,7 @@ This is designed, not built.
 | `render.ts` | Fills `{{variable}}` templates, in a single pass |
 | `platform.ts` | `PlatformId` and `PlatformPolicy` |
 | `events.ts` | `InboundEvent`, the canonical form of everything received |
+| `ports.ts` | `RunStore` and `PlatformGateway`, the interfaces adapters implement |
 
 ### Usage
 
@@ -220,6 +225,25 @@ The policy check is deliberately strict: it can reject a legal flow, but it shou
 
 These run on generated flows and input sequences using fast-check. They cover the pure core only. Crashes, real concurrency and database behaviour are for the simulator and Postgres contract tests, which aren't built yet.
 
+## The testkit package
+
+`packages/testkit` holds what tests need to stand in for the outside world.
+
+| File | Responsibility |
+|---|---|
+| `memoryStore.ts` | `createMemoryStore`, a `RunStore` for fast tests, with no database |
+| `storeContract.ts` | `describeRunStore`, the tests every store adapter must pass |
+
+`RunStore` is split into three interfaces: `EventInbox`, `RunLog` and `EffectOutbox`. One adapter implements all three, because a single write can span them. It exposes no generic `transaction()`. Instead, each method is atomic and takes the pure transition as an argument, so an adapter can hold a lock or retry on a conflict.
+
+To test a new adapter, pass a factory for a fresh store:
+
+```ts
+describeRunStore("postgres", async () => createPostgresStore(await freshDatabase()));
+```
+
+The memory store enforces the same constraints as a real database, but it's single-threaded. Its concurrency tests pass trivially, so they only prove something once they run against Postgres.
+
 ## Development
 
 Requires Node 24 or later and pnpm. Node runs the TypeScript directly, so there's no build step.
@@ -233,8 +257,8 @@ pnpm typecheck
 ## Roadmap
 
 1. `core`: machine, validator and property tests (done)
-2. `testkit`: memory store, store contract suite and simulator
-3. `core`: engine (dispatcher, effect worker, timer sweeper), tested on the simulator
+2. `testkit`: memory store and store contract suite (done)
+3. `core`: engine (dispatcher, effect worker, timer sweeper), plus a simulator that injects duplicates, reordering and crashes
 4. `store-postgres`, passing the same contract suite
 5. HTTP transport, fake platform and Docker Compose, with an end-to-end script that also kills the server mid-flow
 6. Update this document to match what was actually built

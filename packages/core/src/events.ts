@@ -23,3 +23,9 @@ export type InboundEvent = {
   readonly accountId: string;
   readonly eventId: string;
 } & (({ readonly kind: "comment" } & Comment) | ({ readonly kind: "message" } & Message));
+
+/** Comes from the platform, not the transport, so one event arriving by two routes dedupes. */
+export type EventRef = Pick<InboundEvent, "platform" | "accountId" | "eventId">;
+
+export const eventContact = (event: InboundEvent): string =>
+  event.kind === "comment" ? event.authorId : event.senderId;
