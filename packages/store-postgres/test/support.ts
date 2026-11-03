@@ -15,8 +15,15 @@ export type TestDatabase = {
 /** Each test file gets its own schema, so files can run in parallel. */
 export const createTestDatabase = async (url: string): Promise<TestDatabase> => {
   const schema = `test_${randomUUID().replaceAll("-", "")}`;
-  const admin = new pg.Client({ connectionString: url });
-  await admin.connect();
+  const admin = new pg.Client({ connectionString: url, connectionTimeoutMillis: 5_000 });
+  try {
+    await admin.connect();
+  } catch (error) {
+    throw new Error(
+      `Can't reach the test database at ${new URL(url).host}. Is Postgres running? Try \`pnpm db:up\`.`,
+      { cause: error },
+    );
+  }
   await admin.query(`CREATE SCHEMA ${schema}`);
   await admin.end();
 

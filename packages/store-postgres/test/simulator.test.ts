@@ -8,21 +8,22 @@ const RUNS = Number(process.env["SIMULATOR_RUNS"] ?? 15);
 const TIMEOUT = 280_000;
 
 describe.skipIf(TEST_DATABASE_URL === undefined)("the system on Postgres", () => {
-  let database: TestDatabase;
+  let database: TestDatabase | undefined;
 
   beforeAll(async () => {
     database = await createTestDatabase(TEST_DATABASE_URL as string);
   });
 
+  // Skipped when setup failed, so its error isn't buried under a second one.
   afterAll(async () => {
-    await database.dispose();
+    await database?.dispose();
   });
 
   const onPostgres = async () => {
-    await database.reset();
+    await database?.reset();
     return {
-      store: createPostgresStore(database.pool),
-      limiter: createPostgresRateLimiter(database.pool),
+      store: createPostgresStore((database as TestDatabase).pool),
+      limiter: createPostgresRateLimiter((database as TestDatabase).pool),
     };
   };
 
