@@ -1,52 +1,11 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import {
-  createSimulation,
-  HOUR,
-  MINUTE,
-  SCENARIO_SIZE,
-  type SimAction,
-} from "../src/index.ts";
-
-const engineWork: fc.Arbitrary<SimAction> = fc.oneof(
-  fc.constant<SimAction>({ tag: "dispatch" }),
-  fc.integer({ min: 1, max: 4 }).map((limit): SimAction => ({ tag: "send", limit })),
-  fc.constant<SimAction>({ tag: "timers" }),
-  fc.constant<SimAction>({ tag: "parallel" }),
-);
-
-const world: fc.Arbitrary<SimAction> = fc.oneof(
-  fc.nat(SCENARIO_SIZE - 1).map((index): SimAction => ({ tag: "deliver", index })),
-  fc.integer({ min: 1, max: 10 * MINUTE }).map((ms): SimAction => ({ tag: "advance", ms })),
-);
-
-const faults: fc.Arbitrary<SimAction> = fc.oneof(
-  fc
-    .tuple(fc.constantFrom("before" as const, "after" as const), fc.nat(4))
-    .map(([timing, skip]): SimAction => ({ tag: "crash", timing, skip })),
-  fc.constantFrom("transient" as const, "permanent" as const, "ambiguous" as const).map(
-    (script): SimAction => ({ tag: "gatewayFault", script }),
-  ),
-);
-
-const schedule = (...parts: readonly fc.Arbitrary<SimAction>[]) =>
-  fc.array(fc.oneof(...parts), { minLength: 10, maxLength: 80 });
-
-const runSchedule = async (actions: readonly SimAction[]) => {
-  const simulation = createSimulation();
-  for (const action of actions) {
-    await simulation.perform(action);
-    await simulation.checkSafety();
-  }
-  await simulation.drain();
-  await simulation.checkFinal();
-  return simulation;
-};
+import { arbFaultySchedule, arbHealthySchedule, HOUR, runSchedule, type SimAction } from "../src/index.ts";
 
 describe("the system under an adversarial schedule", () => {
   it("keeps every guarantee through crashes, faults, duplicates and reordering", async () => {
     await fc.assert(
-      fc.asyncProperty(schedule(engineWork, world, faults), async (actions) => {
+      fc.asyncProperty(arbFaultySchedule, async (actions) => {
         await runSchedule(actions);
       }),
       { numRuns: 300 },
@@ -55,7 +14,7 @@ describe("the system under an adversarial schedule", () => {
 
   it("sends each message exactly once when nothing goes wrong", async () => {
     await fc.assert(
-      fc.asyncProperty(schedule(engineWork, world), async (actions) => {
+      fc.asyncProperty(arbHealthySchedule, async (actions) => {
         const simulation = await runSchedule(actions);
         expect(simulation.wasFaultFree()).toBe(true);
         const keys = simulation.harness.gateway.sent.map((message) => message.key);
@@ -69,15 +28,16 @@ describe("the system under an adversarial schedule", () => {
     let completed = 0;
     let crashedRuns = 0;
     await fc.assert(
-      fc.asyncProperty(schedule(engineWork, world, faults), async (actions) => {
+      fc.asyncProperty(arbFaultySchedule, async (actions) => {
         const simulation = await runSchedule(actions);
         const { sent } = simulation.harness.gateway;
         if (sent.some((message) => message.action.text.includes("https://"))) completed += 1;
         if (!simulation.wasFaultFree()) crashedRuns += 1;
       }),
-      { numRuns: 100 },
+      // A fixed seed, because this measures the generator and shouldn't vary between runs.
+      { numRuns: 100, seed: 42 },
     );
-    expect(completed).toBeGreaterThan(5);
+    expect(completed).toBeGreaterThan(40);
     expect(crashedRuns).toBeGreaterThan(50);
   }, 60_000);
 

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   actionClass,
   initialState,
@@ -7,6 +8,7 @@ import {
   type Input,
   type MachineConfig,
   type PlatformPolicy,
+  type RateLimiter,
   type RunStore,
   type Instant,
 } from "@automations/core";
@@ -102,6 +104,8 @@ export const withCrashes = (inner: RunStore): CrashingStore => {
 /** One thing that can happen next. A schedule is any list of these. */
 export type SimAction =
   | { readonly tag: "deliver"; readonly index: number }
+  /** A contact replies, but only once they've actually been DMed, as a real person would. */
+  | { readonly tag: "answer"; readonly index: number }
   | { readonly tag: "dispatch" }
   | { readonly tag: "send"; readonly limit: number }
   | { readonly tag: "timers" }
@@ -127,6 +131,10 @@ const scenario: readonly Webhook[] = [
 ];
 
 export const SCENARIO_SIZE = scenario.length;
+
+const replyIndices = scenario.flatMap((webhook, index) =>
+  webhook(0).kind === "message" ? [index] : [],
+);
 
 export const simPolicy: PlatformPolicy = {
   dmFromComment: { maxMessages: 1, withinMs: 7 * DAY },
@@ -162,10 +170,17 @@ export type Simulation = {
   wasFaultFree(): boolean;
 };
 
-export const createSimulation = (): Simulation => {
-  const crashing = withCrashes(createMemoryStore());
+/** Defaults to the in-memory parts. Pass real ones to run the same schedules on them. */
+export type SimulationParts = {
+  readonly store?: RunStore;
+  readonly limiter?: RateLimiter;
+};
+
+export const createSimulation = (parts: SimulationParts = {}): Simulation => {
+  const crashing = withCrashes(parts.store ?? createMemoryStore());
   const harness = createHarness({
     store: crashing.store,
+    ...(parts.limiter === undefined ? {} : { limiter: parts.limiter }),
     policy: simPolicy,
     automations: [{ versionId: "pricing-v1", definition: pricingDefinition }],
     engine: engineOptions,
@@ -199,10 +214,39 @@ export const createSimulation = (): Simulation => {
   const commentEvents = (): readonly InboundEvent[] =>
     [...delivered.values()].filter((event) => event.kind === "comment");
 
+  const hasBeenDmed = (contact: string): boolean => {
+    const theirComments = new Set(
+      commentEvents().flatMap((event) =>
+        event.kind === "comment" && event.authorId === contact ? [event.commentId] : [],
+      ),
+    );
+    return gateway.sent.some(
+      ({ action }) =>
+        action.kind === "sendDm" &&
+        action.recipient.kind === "viaComment" &&
+        theirComments.has(action.recipient.commentId),
+    );
+  };
+
+  const emailReply = (eventId: string) => {
+    const index = scenario.findIndex((webhook) => webhook(0).eventId === eventId);
+    return { ...(scenario[index] as Webhook)(0), index };
+  };
+
+  const answer = async (choice: number): Promise<void> => {
+    const index = replyIndices[choice % replyIndices.length] as number;
+    const reply = (scenario[index] as Webhook)(0);
+    if (reply.kind === "message" && hasBeenDmed(reply.senderId)) {
+      await deliver(index);
+    }
+  };
+
   const perform = async (action: SimAction): Promise<void> => {
     switch (action.tag) {
       case "deliver":
         return surviving(() => deliver(action.index));
+      case "answer":
+        return surviving(() => answer(action.index));
       case "dispatch":
         return surviving(() => engine.dispatchNext());
       case "send":
@@ -237,6 +281,12 @@ export const createSimulation = (): Simulation => {
     await store.appendEvents([...delivered.values()]);
     for (let index = 0; index < DRAIN_STEPS; index += 1) {
       await surviving(async () => {
+        // Whoever has a valid email to give answers once asked. Carol never does, so runs expire too.
+        for (const event of [emailReply("a-email"), emailReply("b-email")]) {
+          if (event.kind === "message" && hasBeenDmed(event.senderId) && !delivered.has(event.index)) {
+            await deliver(event.index);
+          }
+        }
         while (await engine.dispatchNext());
         while ((await engine.sendEffects(5)) > 0);
         await engine.fireTimers(10);
@@ -330,10 +380,15 @@ export const createSimulation = (): Simulation => {
       const inputs: readonly Input[] = log.map((entry) => entry.input);
       const replayed = replay(config, inputs, initialState);
       const records = await store.effects(runId);
-      if (JSON.stringify(replayed.state) !== JSON.stringify(run.state)) {
+      if (!isDeepStrictEqual(replayed.state, run.state)) {
         fail(`Run for ${event.eventId} disagrees with the fold of its log.`);
       }
-      if (JSON.stringify(replayed.effects) !== JSON.stringify(records.map((row) => row.effect))) {
+      if (
+        !isDeepStrictEqual(
+          replayed.effects,
+          records.map((row) => row.effect),
+        )
+      ) {
         fail(`Outbox for ${event.eventId} disagrees with the fold of its log.`);
       }
 

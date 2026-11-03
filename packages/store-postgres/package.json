@@ -1,0 +1,14 @@
+{
+  "name": "@automations/store-postgres",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@automations/core": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@automations/testkit": "workspace:*"
+  }
+}

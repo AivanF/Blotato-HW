@@ -156,6 +156,7 @@ export const createStaticCatalog = (
 
 export type HarnessOptions = {
   readonly store?: RunStore;
+  readonly limiter?: RateLimiter;
   readonly policy?: PlatformPolicy;
   readonly automations?: readonly CatalogAutomation[];
   readonly engine?: EngineOptions;
@@ -175,7 +176,7 @@ export const createHarness = (options: HarnessOptions = {}): Harness => {
   const clock = createFakeClock();
   const store = options.store ?? createMemoryStore();
   const gateway = createFakeGateway(clock);
-  const limiter = createMemoryRateLimiter();
+  const limiter = options.limiter ?? createMemoryRateLimiter();
   const notes: EngineNote[] = [];
   const policy = options.policy ?? testPolicy;
   const automations = options.automations ?? [

@@ -7,7 +7,8 @@ export const createMemoryRateLimiter = (): RateLimiter => {
   const logs = new Map<string, number[]>();
   return {
     async acquire(account, limit, now) {
-      const key = JSON.stringify([account.platform, account.accountId, limit.action]);
+      // The window is part of the key, so an hourly and a daily limit keep separate logs.
+      const key = JSON.stringify([account.platform, account.accountId, limit.action, limit.perMs]);
       const log = (logs.get(key) ?? []).filter((at) => at > now - limit.perMs);
       logs.set(key, log);
       const oldest = log[0];
@@ -74,12 +75,27 @@ export const describeRateLimiter = (name: string, create: () => Promise<RateLimi
       );
     });
 
+    it("keeps two windows on one action class separate", async () => {
+      const limiter = await create();
+      const hourly = { ...limit, max: 1, perMs: 100 };
+      const daily = { ...limit, max: 2, perMs: 10_000 };
+      await limiter.acquire(account, daily, 0);
+      await limiter.acquire(account, hourly, 0);
+      expect((await limiter.acquire(account, hourly, 100)).tag).toBe("granted");
+      await limiter.acquire(account, daily, 100);
+      expect((await limiter.acquire(account, daily, 200)).tag).toBe("denied");
+    });
+
     it("grants no more than the limit to concurrent callers", async () => {
       const limiter = await create();
-      const results = await Promise.all(
-        Array.from({ length: 16 }, () => limiter.acquire(account, limit, 0)),
-      );
-      expect(results.filter((result) => result.tag === "granted")).toHaveLength(limit.max);
+      // Many rounds, because a race can slip past any single attempt.
+      for (let round = 0; round < 20; round += 1) {
+        const now = round * limit.perMs;
+        const results = await Promise.all(
+          Array.from({ length: 16 }, () => limiter.acquire(account, limit, now)),
+        );
+        expect(results.filter((result) => result.tag === "granted")).toHaveLength(limit.max);
+      }
     });
   });
 };

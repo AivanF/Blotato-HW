@@ -15,7 +15,10 @@ The system is built around one idea: **all run logic is a pure function, and eve
 | `packages/testkit`: memory store, store contract suite, contacts | Built and tested |
 | Engine and `RateLimiter` in `packages/core` | Built and tested |
 | Simulator in `packages/testkit` | Built |
-| Postgres store, HTTP transport, Docker Compose | Designed |
+| `packages/store-postgres`: store, rate limiter, migrations | Built and tested on real Postgres |
+| Postgres service in Docker Compose | Built |
+| HTTP transport, fake platform, full Compose stack | Designed |
+| Postgres tables for automations (the `AutomationCatalog` port) | Designed |
 | Mongo, gRPC, real Instagram and Facebook adapters | Designed for, not planned for this project |
 | Write-up of AI use | To be written by the author |
 
@@ -138,7 +141,7 @@ Source: [Meta: Private Replies](https://developers.facebook.com/documentation/bu
 
 ## Reliability
 
-Each row is a guarantee of the store port, checked by the contract suite against the memory store so far. The Postgres column is designed, not built. Rate limiting is a separate port with its own contract.
+Each row is a guarantee of the store port, checked by the same contract suite on the memory store and on real Postgres. The Postgres column is how that adapter provides it. Rate limiting is a separate port with its own contract, and uses an advisory lock per limit.
 
 | Hazard | Guarantee | Postgres |
 |---|---|---|
@@ -155,18 +158,19 @@ Delivery is at-least-once, so a crash can occasionally produce a duplicate DM. A
 
 ## Data model
 
-This is designed, not built.
+The first three tables are designed, not built: for now, automations come from whatever implements the `AutomationCatalog` port. The rest are in `packages/store-postgres/migrations`.
 
 | Table | Purpose | Key constraints |
 |---|---|---|
 | `automations` | Status, priority, active version | |
 | `automation_accounts` | Which accounts an automation targets | Unique `(automation_id, social_account_id)` |
 | `automation_versions` | Immutable `definition` JSON | Unique `(automation_id, version)` |
+| `rate_limit_log` | Recent sends per limit | Indexed `(key, at)` |
 | `contacts` | Platform, account, user ID, nickname and email (PII) | Unique `(platform, account_id, contact_id)` |
 | `inbound_events` | Inbox | Unique `(platform, account_id, event_id)` |
-| `runs` | `state` JSON, `status`, `wake_at`, pinned version | Primary key derived from the trigger event; partial unique `(social_account_id, contact_id) WHERE status = 'active'` |
+| `runs` | `state` JSON, `active`, `wake_at`, pinned version | Primary key derived from the trigger event; partial unique `(platform, account_id, contact_id) WHERE active` |
 | `run_transitions` | Audit log: input, effects, state after | Unique `(run_id, input_id)` |
-| `effects` | Outbox: `status`, `attempts`, `not_after`, `lease_until` | Unique `(run_id, seq)` |
+| `effects` | Outbox: `effect` JSON, `status`, `attempts`, `failures`, `next_attempt_at`, `lease_until` | Unique `(run_id, seq)` |
 
 ## The core package
 
@@ -265,7 +269,7 @@ A schedule is a generated list of: webhook deliveries in any order (with duplica
 | Order | A run's messages go out in order |
 | Exactly once when healthy | With no faults, each message goes out exactly once |
 
-Crashes can still produce a duplicate message, by design. The memory store is single-threaded, so concurrency here means interleaving at `await` points, not real parallelism.
+Crashes can still produce a duplicate message, by design. On the memory store, concurrency means interleaving at `await` points. The same schedules also run on Postgres, where workers really do run in parallel.
 
 `RunStore` is split into three interfaces: `EventInbox`, `RunLog` and `EffectOutbox`. One adapter implements all three, because a single write can span them. It exposes no generic `transaction()`. Instead, each method is atomic and takes the pure transition as an argument, so an adapter can hold a lock or retry on a conflict.
 
@@ -275,7 +279,27 @@ To test a new adapter, pass a factory for a fresh store:
 describeRunStore("postgres", async () => createPostgresStore(await freshDatabase()));
 ```
 
-The memory store enforces the same constraints as a real database, but it's single-threaded. Its concurrency tests pass trivially, so they only prove something once they run against Postgres.
+The memory store enforces the same constraints as a real database, but it's single-threaded. Its concurrency tests pass trivially, and only prove something on Postgres.
+
+## The Postgres package
+
+`packages/store-postgres` implements `RunStore` and `RateLimiter` with `pg` and plain SQL. It uses no ORM, because the guarantees depend on exact queries.
+
+| File | Responsibility |
+|---|---|
+| `migrations/` | The schema, applied in name order by `migrate` |
+| `src/runStore.ts` | `createPostgresStore` |
+| `src/rateLimiter.ts` | `createPostgresRateLimiter` |
+| `src/database.ts` | `migrate` and `inTransaction` |
+
+Three details are easy to get wrong:
+
+- **Claims re-check their conditions on the locked row.** `SKIP LOCKED` stops two workers locking one row at once, but a row can change between a query's snapshot and its lock. Without the re-check, an effect can be sent twice.
+- **A run's transitions hold its row lock.** Every transition takes `FOR UPDATE` on the run first, which serializes them and gives a single lock order.
+- **The JSON columns don't keep key order.** That's why state comparisons are structural, never on serialized strings.
+- **Nothing waits forever.** `createPool` sets lock, statement, idle-transaction and connection timeouts. A stuck query then fails, and its lease expires so another worker retries.
+
+The contract suite and simulator both run here too. Each test file gets its own schema, so these tests can run in parallel and can't touch other data.
 
 ## Development
 
@@ -283,15 +307,21 @@ Requires Node 24 or later and pnpm. Node runs the TypeScript directly, so there'
 
 ```sh
 pnpm install
-pnpm test
+pnpm test       # fast tests only, no Docker needed
 pnpm typecheck
+
+pnpm db:up      # start Postgres in Docker, with its data in memory
+pnpm test:db    # everything, including Postgres
+pnpm db:down
 ```
+
+`pnpm test` skips the Postgres tests when `TEST_DATABASE_URL` isn't set. `SIMULATOR_RUNS` sets how many schedules the Postgres simulator tries (default 15).
 
 ## Roadmap
 
 1. `core`: machine, validator and property tests (done)
 2. `testkit`: memory store and store contract suite (done)
 3. `core`: engine (dispatcher, effect worker, timer sweeper) and rate limiter, plus a simulator that injects duplicates, reordering and crashes (done)
-4. `store-postgres`, passing the same contract suite
+4. `store-postgres`, passing the same contract suite and simulator (done)
 5. HTTP transport, fake platform and Docker Compose, with an end-to-end script that also kills the server mid-flow
 6. Update this document to match what was actually built

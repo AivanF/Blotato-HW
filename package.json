@@ -8,10 +8,14 @@
   },
   "scripts": {
     "test": "vitest run",
+    "test:db": "TEST_DATABASE_URL=postgres://automations:automations@localhost:54329/automations vitest run",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
     "fast-check": "^4.10.2",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"

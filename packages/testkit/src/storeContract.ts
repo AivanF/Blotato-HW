@@ -602,6 +602,36 @@ export const describeRunStore = (name: string, createStore: () => Promise<RunSto
         expect(ids).toHaveLength(WORKERS);
       });
 
+      it("never double-claims an effect, over many rounds of contention", async () => {
+        // Many rounds, because a race can slip past any single attempt.
+        for (let round = 0; round < 30; round += 1) {
+          await Promise.all(
+            Array.from({ length: 4 }, (_, index) =>
+              store.startRun(
+                runRef(`r${round}-${index}`, `contact-${round}-${index}`),
+                start(),
+                to(waiting(), [effect(0)]),
+              ),
+            ),
+          );
+          const claims = (await workers(() => store.claimEffects(round, 1, 1_000))).flat();
+          const ids = claims.map((claim) => claim.run.runId);
+          expect(new Set(ids).size).toBe(ids.length);
+        }
+      });
+
+      it("never double-claims an event, over many rounds of contention", async () => {
+        for (let round = 0; round < 30; round += 1) {
+          const events = ["alice", "bob", "carol", "dave"].map((contact) =>
+            comment(`e${round}-${contact}`, `${contact}-${round}`),
+          );
+          await store.appendEvents(events);
+          const claims = await workers(() => store.claimEvent(round, 1_000));
+          const ids = claims.flatMap((claim) => (claim === null ? [] : [claim.eventId]));
+          expect(new Set(ids).size).toBe(ids.length);
+        }
+      });
+
       it("hands a contact's events to one worker at a time", async () => {
         await store.appendEvents(
           Array.from({ length: WORKERS }, (_, index) => comment(`e${index}`, "alice")),
