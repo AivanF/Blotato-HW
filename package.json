@@ -9,6 +9,7 @@
   "scripts": {
     "test": "vitest run",
     "test:db": "TEST_DATABASE_URL=postgres://automations:automations@localhost:54329/automations vitest run",
+    "e2e": "node --disable-warning=ExperimentalWarning apps/e2e/src/main.ts",
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down",
     "typecheck": "tsc --noEmit"

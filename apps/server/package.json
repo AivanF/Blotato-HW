@@ -1,0 +1,17 @@
+{
+  "name": "@automations/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/app.ts",
+  "dependencies": {
+    "@automations/core": "workspace:*",
+    "@automations/platform-fake": "workspace:*",
+    "@automations/store-postgres": "workspace:*",
+    "@automations/transport-http": "workspace:*"
+  },
+  "devDependencies": {
+    "@automations/fake-platform": "workspace:*",
+    "@automations/testkit": "workspace:*"
+  }
+}

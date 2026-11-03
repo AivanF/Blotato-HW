@@ -17,7 +17,10 @@ The system is built around one idea: **all run logic is a pure function, and eve
 | Simulator in `packages/testkit` | Built |
 | `packages/store-postgres`: store, rate limiter, migrations | Built and tested on real Postgres |
 | Postgres service in Docker Compose | Built |
-| HTTP transport, fake platform, full Compose stack | Designed |
+| `packages/transport-http`: webhook receiver | Built and tested |
+| `packages/platform-fake`: a fake platform's codec, gateway and policy | Built and tested |
+| `apps/server`, `apps/fake-platform`, full Compose stack | Built, with in-process and Docker end-to-end tests |
+| Automations loaded from a JSON file | Built |
 | Postgres tables for automations (the `AutomationCatalog` port) | Designed |
 | Mongo, gRPC, real Instagram and Facebook adapters | Designed for, not planned for this project |
 | Write-up of AI use | To be written by the author |
@@ -123,6 +126,10 @@ These are product questions rather than system design ones. This is a test proje
 | A sliding log for rate limits, not a token bucket | A token bucket can allow twice the limit within one window |
 | Waiting for a rate limit doesn't count as a failed send | Otherwise a backlog alone would make effects give up |
 | The engine is single steps with no loops inside | A server and a simulator can each schedule them their own way |
+| Node's built-in `http`, no framework | The server has three routes, and webhook signatures need the raw body anyway |
+| Automations come from a JSON file for now | Enough to run the system. The file is parsed and validated at startup, so a bad flow stops the server instead of failing on the first comment |
+| A webhook is acknowledged only after it's stored | If storing fails, the platform gets a 503 and retries, so nothing is lost |
+| A fake platform instead of a real one | It enforces Instagram's messaging rules, so a policy violation shows up as a failed send. A real adapter would replace `packages/platform-fake` without touching the core |
 | State column as source of truth, plus a transition log | Simpler reads than full event sourcing. A test asserts that folding the log gives the state |
 | Timeouts start at delivery, not when queued | A long rate-limit backlog would otherwise use up the wait |
 | Plain discriminated unions, no fp-ts or Effect | The math stays in the design, and the code stays easy to read |
@@ -301,6 +308,37 @@ Three details are easy to get wrong:
 
 The contract suite and simulator both run here too. Each test file gets its own schema, so these tests can run in parallel and can't touch other data.
 
+## The server and fake platform
+
+| Part | Responsibility |
+|---|---|
+| `core/src/parse.ts` | `parseDefinition`: checks a definition's JSON shape and rejects unknown fields, before `validate` checks its meaning |
+| `packages/transport-http` | `createWebhookHandler` serves `/webhooks/<platform>`: verifies the signature, decodes, stores, then acknowledges |
+| `packages/platform-fake` | The fake platform's `WebhookCodec`, `PlatformGateway` and `PlatformPolicy`, shaped like Instagram's API |
+| `apps/server` | Wires everything together and runs the worker loops; `GET /healthz` checks the database |
+| `apps/fake-platform` | Simulates users, delivers signed webhooks, and receives what we send |
+| `apps/e2e` | Drives the Docker stack through the pricing flow |
+
+The fake platform's HTTP API:
+
+| Route | Purpose |
+|---|---|
+| `POST /simulate/comment` | A user comments: `{ "account", "from", "text", "fromName"?, "id"? }`. Reusing an `id` replays the webhook |
+| `POST /simulate/message` | A user sends a DM: `{ "account", "from", "text", "id"? }` |
+| `GET /sent` | Everything we've sent, in order |
+| `POST /fail-next` | Makes the next send fail: `{ "status", "retryAfterSeconds"? }` |
+| `POST /send` | Where the server's gateway sends replies and DMs |
+
+The end-to-end test, `pnpm e2e`, builds and starts the stack, then:
+
+1. Alice comments "Pricing?", and Bob comments off-topic.
+2. The server is killed with `SIGKILL`, before Alice answers.
+3. Alice answers while it's down, so the webhook fails.
+4. The server restarts, and the platform delivers her answer twice.
+5. It checks that exactly one reply, one ask and one link were sent, nothing went to Bob, and Alice's run and contact are saved in Postgres.
+
+Set `KEEP=1` to leave the stack running afterwards. The webhook secret in `compose.yaml` is for local development only.
+
 ## Development
 
 Requires Node 24 or later and pnpm. Node runs the TypeScript directly, so there's no build step.
@@ -313,7 +351,11 @@ pnpm typecheck
 pnpm db:up      # start Postgres in Docker, with its data in memory
 pnpm test:db    # everything, including Postgres
 pnpm db:down
+
+pnpm e2e        # the whole stack in Docker, about a minute
 ```
+
+Locally, `docker compose up --build` runs the server on port 8080 and the fake platform on port 8090.
 
 `pnpm test` skips the Postgres tests when `TEST_DATABASE_URL` isn't set. `SIMULATOR_RUNS` sets how many schedules the Postgres simulator tries (default 15).
 
@@ -323,5 +365,5 @@ pnpm db:down
 2. `testkit`: memory store and store contract suite (done)
 3. `core`: engine (dispatcher, effect worker, timer sweeper) and rate limiter, plus a simulator that injects duplicates, reordering and crashes (done)
 4. `store-postgres`, passing the same contract suite and simulator (done)
-5. HTTP transport, fake platform and Docker Compose, with an end-to-end script that also kills the server mid-flow
+5. HTTP transport, fake platform and Docker Compose, with an end-to-end script that also kills the server mid-flow (done)
 6. Update this document to match what was actually built

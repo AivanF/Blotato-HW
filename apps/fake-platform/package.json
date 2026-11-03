@@ -1,0 +1,12 @@
+{
+  "name": "@automations/fake-platform",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/app.ts",
+  "dependencies": {
+    "@automations/core": "workspace:*",
+    "@automations/platform-fake": "workspace:*",
+    "@automations/transport-http": "workspace:*"
+  }
+}

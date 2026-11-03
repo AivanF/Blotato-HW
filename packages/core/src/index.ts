@@ -3,6 +3,7 @@ export * from "./engine/index.ts";
 export * from "./events.ts";
 export * from "./extract.ts";
 export * from "./machine.ts";
+export * from "./parse.ts";
 export * from "./platform.ts";
 export * from "./ports.ts";
 export * from "./render.ts";

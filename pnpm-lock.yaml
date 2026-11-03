@@ -24,7 +24,52 @@ importers:
         specifier: ^5.1.0
         version: 5.1.0(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2))
 
+  apps/e2e: {}
+
+  apps/fake-platform:
+    dependencies:
+      '@automations/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@automations/platform-fake':
+        specifier: workspace:*
+        version: link:../../packages/platform-fake
+      '@automations/transport-http':
+        specifier: workspace:*
+        version: link:../../packages/transport-http
+
+  apps/server:
+    dependencies:
+      '@automations/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@automations/platform-fake':
+        specifier: workspace:*
+        version: link:../../packages/platform-fake
+      '@automations/store-postgres':
+        specifier: workspace:*
+        version: link:../../packages/store-postgres
+      '@automations/transport-http':
+        specifier: workspace:*
+        version: link:../../packages/transport-http
+    devDependencies:
+      '@automations/fake-platform':
+        specifier: workspace:*
+        version: link:../fake-platform
+      '@automations/testkit':
+        specifier: workspace:*
+        version: link:../../packages/testkit
+
   packages/core: {}
+
+  packages/platform-fake:
+    dependencies:
+      '@automations/core':
+        specifier: workspace:*
+        version: link:../core
+      '@automations/transport-http':
+        specifier: workspace:*
+        version: link:../transport-http
 
   packages/store-postgres:
     dependencies:
@@ -50,6 +95,16 @@ importers:
       vitest:
         specifier: ^5.1.0
         version: 5.1.0(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2))
+
+  packages/transport-http:
+    dependencies:
+      '@automations/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@automations/testkit':
+        specifier: workspace:*
+        version: link:../testkit
 
 packages:
 

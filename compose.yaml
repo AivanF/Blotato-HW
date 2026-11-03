@@ -1,3 +1,6 @@
+x-secret: &secret
+  WEBHOOK_SECRET: local-development-secret
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -11,6 +14,39 @@ services:
       - /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U automations -d automations"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build: .
+    init: true
+    environment:
+      <<: *secret
+      DATABASE_URL: postgres://automations:automations@postgres:5432/automations
+      FAKE_PLATFORM_URL: http://fake-platform:8090
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  fake-platform:
+    build: .
+    init: true
+    command: ["node", "--disable-warning=ExperimentalWarning", "apps/fake-platform/src/main.ts"]
+    environment:
+      <<: *secret
+      SERVER_URL: http://server:8080
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/healthz"]
       interval: 2s
       timeout: 3s
       retries: 20

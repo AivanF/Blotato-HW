@@ -1,0 +1,37 @@
+{
+  "accounts": [
+    {
+      "platform": "fake",
+      "accountId": "acme",
+      "selfAuthorId": "acme",
+      "automations": [
+        {
+          "versionId": "pricing-v1",
+          "definition": {
+            "trigger": { "kind": "comment", "keyword": "pricing", "posts": "any" },
+            "entry": "reply",
+            "nodes": {
+              "reply": { "kind": "replyToComment", "text": "Sent you a DM!", "onFailure": "continue", "next": "ask" },
+              "ask": { "kind": "sendDm", "text": "Hi! What's your email address?", "onFailure": "abort", "next": "wait" },
+              "wait": {
+                "kind": "awaitReply",
+                "extract": { "kind": "email" },
+                "bindAs": "email",
+                "onMatch": "link",
+                "reprompt": "That doesn't look like an email address. Could you send it again?",
+                "maxReprompts": 1,
+                "onExhausted": "gaveUp",
+                "timeoutMs": 259200000,
+                "onTimeout": "expired"
+              },
+              "link": { "kind": "sendDm", "text": "Thanks, {{email}}! Here's our pricing: https://example.com/pricing", "onFailure": "abort", "next": "done" },
+              "done": { "kind": "end", "outcome": "completed" },
+              "gaveUp": { "kind": "end", "outcome": "abandoned" },
+              "expired": { "kind": "end", "outcome": "expired" }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
